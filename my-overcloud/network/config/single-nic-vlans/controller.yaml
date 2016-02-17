@@ -74,6 +74,10 @@ resources:
         os_net_config:
           network_config:
             -
+              type: interface
+              name: nic2
+              use_dhcp: false
+            -
               type: ovs_bridge
               name: {get_input: bridge_name}
               use_dhcp: false
