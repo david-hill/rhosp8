@@ -46,7 +46,11 @@ exec { 'reset-iscsi-initiator-name':
 
 file { '/etc/iscsi/.initiator_reset':
   ensure => present,
-}
+} ~>
+service{"iscsid":
+  ensure => 'running',
+} ~>
+Service["nova-compute"]
 
 include ::nova
 include ::nova::config

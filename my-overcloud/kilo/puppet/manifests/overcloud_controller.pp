@@ -187,6 +187,14 @@ if hiera('step') >= 2 {
   }
 
   if str2bool(hiera('enable_external_ceph', 'false')) {
+    if str2bool(hiera('ceph_ipv6', false)) {
+      $mon_host = hiera('ceph_mon_host_v6')
+    } else {
+      $mon_host = hiera('ceph_mon_host')
+    }
+    class { '::ceph::profile::params':
+      mon_host            => $mon_host,
+    }
     include ::ceph::profile::client
   }
 

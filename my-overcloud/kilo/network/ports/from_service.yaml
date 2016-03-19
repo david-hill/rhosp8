@@ -34,4 +34,4 @@ outputs:
     value: {get_param: [ServiceVips, {get_param: ServiceName}]}
   ip_address_uri:
     description: external network IP (for compatibility with IPv6)
-    value: {get_param: [IPPool, {get_param: ExternalNetName}, {get_param: NodeIndex}]}
+    value: {get_param: [ServiceVips, {get_param: ServiceName}]}

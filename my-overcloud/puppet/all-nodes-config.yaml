@@ -137,6 +137,14 @@ resources:
                         list_join:
                         - "','"
                         - {get_param: memcache_node_ips}
+                memcache_node_ips_v6:
+                  str_replace:
+                    template: "['inet6:[SERVERS_LIST]']"
+                    params:
+                      SERVERS_LIST:
+                        list_join:
+                        - "]','inet6:["
+                        - {get_param: memcache_node_ips}
                 mysql_node_ips:
                   str_replace:
                     template: "['SERVERS_LIST']"
@@ -225,6 +233,15 @@ resources:
                         list_join:
                         - "','"
                         - {get_param: neutron_api_node_ips}
+                # TODO: pass a `midonet_api_node_ips` var
+                midonet_api_node_ips:
+                  str_replace:
+                    template: "['SERVERS_LIST']"
+                    params:
+                      SERVERS_LIST:
+                        list_join:
+                        - "','"
+                        - {get_param: neutron_api_node_ips}
                 keystone_public_api_node_ips:
                   str_replace:
                     template: "['SERVERS_LIST']"
@@ -246,6 +263,7 @@ resources:
                 # hieradata file can't be used as it returns string
                 ceilometer::rabbit_hosts: *rabbit_nodes_array
                 cinder::rabbit_hosts: *rabbit_nodes_array
+                glance::notify::rabbitmq::rabbit_hosts: *rabbit_nodes_array
                 heat::rabbit_hosts: *rabbit_nodes_array
                 neutron::rabbit_hosts: *rabbit_nodes_array
                 nova::rabbit_hosts: *rabbit_nodes_array

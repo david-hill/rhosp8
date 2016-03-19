@@ -39,7 +39,11 @@ $non_pcmk_start = hiera('step') >= 4
 
 if hiera('step') >= 1 {
 
+  create_resources(kmod::load, hiera('kernel_modules'), {})
   create_resources(sysctl::value, hiera('sysctl_settings'), {})
+  Exec <| tag == 'kmod::load' |>  -> Sysctl <| |>
+
+  include ::timezone
 
   if count(hiera('ntp::servers')) > 0 {
     include ::ntp
@@ -58,6 +62,12 @@ if hiera('step') >= 1 {
   }
 
   $pacemaker_cluster_members = downcase(regsubst(hiera('controller_node_names'), ',', ' ', 'G'))
+  $corosync_ipv6 = str2bool(hiera('corosync_ipv6', false))
+  if $corosync_ipv6 {
+    $cluster_setup_extras = { '--ipv6' => '' }
+  } else {
+    $cluster_setup_extras = {}
+  }
   user { 'hacluster':
     ensure => present,
   } ->
@@ -65,8 +75,9 @@ if hiera('step') >= 1 {
     hacluster_pwd => hiera('hacluster_pwd'),
   } ->
   class { '::pacemaker::corosync':
-    cluster_members => $pacemaker_cluster_members,
-    setup_cluster   => $pacemaker_master,
+    cluster_members      => $pacemaker_cluster_members,
+    setup_cluster        => $pacemaker_master,
+    cluster_setup_extras => $cluster_setup_extras,
   }
   class { '::pacemaker::stonith':
     disable => !$enable_fencing,
@@ -78,23 +89,32 @@ if hiera('step') >= 1 {
     Class['tripleo::fencing'] -> Class['pacemaker::stonith']
   }
 
-  # FIXME(gfidente): sets 100secs as default start timeout op
+  # FIXME(gfidente): sets 200secs as default start timeout op
   # param; until we can use pcmk global defaults we'll still
   # need to add it to every resource which redefines op params
   Pacemaker::Resource::Service {
-    op_params => 'start timeout=100s stop timeout=100s',
+    op_params => 'start timeout=200s stop timeout=200s',
   }
 
   # Only configure RabbitMQ in this step, don't start it yet to
   # avoid races where non-master nodes attempt to start without
   # config (eg. binding on 0.0.0.0)
   # The module ignores erlang_cookie if cluster_config is false
+  $rabbit_ipv6 = str2bool(hiera('rabbit_ipv6', false))
+  if $rabbit_ipv6 {
+      $rabbit_env = merge(hiera('rabbitmq_environment'), {
+        'RABBITMQ_SERVER_START_ARGS' => '"-proto_dist inet6_tcp"'
+      })
+  } else {
+    $rabbit_env = hiera('rabbitmq_environment')
+  }
+
   class { '::rabbitmq':
     service_manage          => false,
     tcp_keepalive           => false,
     config_kernel_variables => hiera('rabbitmq_kernel_variables'),
     config_variables        => hiera('rabbitmq_config_variables'),
-    environment_variables   => hiera('rabbitmq_environment'),
+    environment_variables   => $rabbit_env,
   } ->
   file { '/var/lib/rabbitmq/.erlang.cookie':
     ensure  => file,
@@ -132,6 +152,11 @@ if hiera('step') >= 1 {
   $galera_nodes = downcase(hiera('galera_node_names', $::hostname))
   $galera_nodes_count = count(split($galera_nodes, ','))
 
+  # FIXME: due to https://bugzilla.redhat.com/show_bug.cgi?id=1298671 we
+  # set bind-address to a hostname instead of an ip address; to move Mysql
+  # from internal_api on another network we'll have to customize both
+  # MysqlNetwork and ControllerHostnameResolveNetwork in ServiceNetMap
+  $mysql_bind_host = hiera('mysql_bind_host')
   $mysqld_options = {
     'mysqld' => {
       'skip-name-resolve'             => '1',
@@ -141,7 +166,7 @@ if hiera('step') >= 1 {
       'innodb_locks_unsafe_for_binlog'=> '1',
       'query_cache_size'              => '0',
       'query_cache_type'              => '0',
-      'bind-address'                  => hiera('mysql_bind_host'),
+      'bind-address'                  => $::hostname,
       'max_connections'               => hiera('mysql_max_connections'),
       'open_files_limit'              => '-1',
       'wsrep_provider'                => '/usr/lib64/galera/libgalera_smm.so',
@@ -157,6 +182,7 @@ if hiera('step') >= 1 {
       'wsrep_drupal_282555_workaround'=> '0',
       'wsrep_causal_reads'            => '0',
       'wsrep_sst_method'              => 'rsync',
+      'wsrep_provider_options'        => "gmcast.listen_addr=tcp://[${mysql_bind_host}]:4567;",
     },
   }
 
@@ -175,8 +201,19 @@ if hiera('step') >= 1 {
 if hiera('step') >= 2 {
 
   # NOTE(gfidente): the following vars are needed on all nodes so they
-  # need to stay out of pacemaker_master conditional
-  $mongo_node_ips_with_port = suffix(hiera('mongo_node_ips'), ':27017')
+  # need to stay out of pacemaker_master conditional.
+  # The addresses mangling will hopefully go away when we'll be able to
+  # configure the connection string via hostnames, until then, we need to pass
+  # the list of IPv6 addresses *with* port and without the brackets as 'members'
+  # argument for the 'mongodb_replset' resource.
+  if str2bool(hiera('mongodb::server::ipv6', false)) {
+    $mongo_node_ips_with_port_prefixed = prefix(hiera('mongo_node_ips'), '[')
+    $mongo_node_ips_with_port = suffix($mongo_node_ips_with_port_prefixed, ']:27017')
+    $mongo_node_ips_with_port_nobr = suffix(hiera('mongo_node_ips'), ':27017')
+  } else {
+    $mongo_node_ips_with_port = suffix(hiera('mongo_node_ips'), ':27017')
+    $mongo_node_ips_with_port_nobr = suffix(hiera('mongo_node_ips'), ':27017')
+  }
   $mongodb_replset = hiera('mongodb::server::replset')
 
   if $pacemaker_master {
@@ -194,8 +231,14 @@ if hiera('step') >= 2 {
       }
 
       $control_vip = hiera('tripleo::loadbalancer::controller_virtual_ip')
+      if is_ipv6_address($control_vip) {
+        $control_vip_netmask = '64'
+      } else {
+        $control_vip_netmask = '32'
+      }
       pacemaker::resource::ip { 'control_vip':
-        ip_address => $control_vip,
+        ip_address   => $control_vip,
+        cidr_netmask => $control_vip_netmask,
       }
       pacemaker::constraint::base { 'control_vip-then-haproxy':
         constraint_type   => 'order',
@@ -216,9 +259,15 @@ if hiera('step') >= 2 {
       }
 
       $public_vip = hiera('tripleo::loadbalancer::public_virtual_ip')
+      if is_ipv6_address($public_vip) {
+        $public_vip_netmask = '64'
+      } else {
+        $public_vip_netmask = '32'
+      }
       if $public_vip and $public_vip != $control_vip {
         pacemaker::resource::ip { 'public_vip':
-          ip_address => $public_vip,
+          ip_address   => $public_vip,
+          cidr_netmask => $public_vip_netmask,
         }
         pacemaker::constraint::base { 'public_vip-then-haproxy':
           constraint_type   => 'order',
@@ -240,9 +289,15 @@ if hiera('step') >= 2 {
       }
 
       $redis_vip = hiera('redis_vip')
+      if is_ipv6_address($redis_vip) {
+        $redis_vip_netmask = '64'
+      } else {
+        $redis_vip_netmask = '32'
+      }
       if $redis_vip and $redis_vip != $control_vip {
         pacemaker::resource::ip { 'redis_vip':
-          ip_address => $redis_vip,
+          ip_address   => $redis_vip,
+          cidr_netmask => $redis_vip_netmask,
         }
         pacemaker::constraint::base { 'redis_vip-then-haproxy':
           constraint_type   => 'order',
@@ -264,9 +319,15 @@ if hiera('step') >= 2 {
       }
 
       $internal_api_vip = hiera('tripleo::loadbalancer::internal_api_virtual_ip')
+      if is_ipv6_address($internal_api_vip) {
+        $internal_api_vip_netmask = '64'
+      } else {
+        $internal_api_vip_netmask = '32'
+      }
       if $internal_api_vip and $internal_api_vip != $control_vip {
         pacemaker::resource::ip { 'internal_api_vip':
-          ip_address => $internal_api_vip,
+          ip_address   => $internal_api_vip,
+          cidr_netmask => $internal_api_vip_netmask,
         }
         pacemaker::constraint::base { 'internal_api_vip-then-haproxy':
           constraint_type   => 'order',
@@ -288,9 +349,15 @@ if hiera('step') >= 2 {
       }
 
       $storage_vip = hiera('tripleo::loadbalancer::storage_virtual_ip')
+      if is_ipv6_address($storage_vip) {
+        $storage_vip_netmask = '64'
+      } else {
+        $storage_vip_netmask = '32'
+      }
       if $storage_vip and $storage_vip != $control_vip {
         pacemaker::resource::ip { 'storage_vip':
-          ip_address => $storage_vip,
+          ip_address   => $storage_vip,
+          cidr_netmask => $storage_vip_netmask,
         }
         pacemaker::constraint::base { 'storage_vip-then-haproxy':
           constraint_type   => 'order',
@@ -312,9 +379,15 @@ if hiera('step') >= 2 {
       }
 
       $storage_mgmt_vip = hiera('tripleo::loadbalancer::storage_mgmt_virtual_ip')
+      if is_ipv6_address($storage_mgmt_vip) {
+        $storage_mgmt_vip_netmask = '64'
+      } else {
+        $storage_mgmt_vip_netmask = '32'
+      }
       if $storage_mgmt_vip and $storage_mgmt_vip != $control_vip {
         pacemaker::resource::ip { 'storage_mgmt_vip':
-          ip_address => $storage_mgmt_vip,
+          ip_address   => $storage_mgmt_vip,
+          cidr_netmask => $storage_mgmt_vip_netmask,
         }
         pacemaker::constraint::base { 'storage_mgmt_vip-then-haproxy':
           constraint_type   => 'order',
@@ -346,12 +419,13 @@ if hiera('step') >= 2 {
       ocf_agent_name  => 'heartbeat:rabbitmq-cluster',
       resource_params => 'set_policy=\'ha-all ^(?!amq\.).* {"ha-mode":"all"}\'',
       clone_params    => 'ordered=true interleave=true',
+      meta_params     => 'notify=true',
       require         => Class['::rabbitmq'],
     }
 
     if downcase(hiera('ceilometer_backend')) == 'mongodb' {
       pacemaker::resource::service { $::mongodb::params::service_name :
-        op_params    => 'start timeout=120s stop timeout=100s',
+        op_params    => 'start timeout=370s stop timeout=200s',
         clone_params => true,
         require      => Class['::mongodb::server'],
       }
@@ -363,7 +437,7 @@ if hiera('step') >= 2 {
         before  => Mongodb_replset[$mongodb_replset],
       }
       mongodb_replset { $mongodb_replset :
-        members => $mongo_node_ips_with_port,
+        members => $mongo_node_ips_with_port_nobr,
       }
     }
 
@@ -448,12 +522,20 @@ MYSQL_HOST=localhost\n",
   include ::swift
 
   # Ceph
-  $enable_ceph = hiera('ceph_storage_count', 0) > 0
+  $enable_ceph = hiera('ceph_storage_count', 0) > 0 or hiera('enable_ceph_storage', false)
 
   if $enable_ceph {
-    class { '::ceph::profile::params':
-      mon_initial_members => downcase(hiera('ceph_mon_initial_members')),
+    $mon_initial_members = downcase(hiera('ceph_mon_initial_members'))
+    if str2bool(hiera('ceph_ipv6', false)) {
+      $mon_host = hiera('ceph_mon_host_v6')
+    } else {
+      $mon_host = hiera('ceph_mon_host')
     }
+    class { '::ceph::profile::params':
+      mon_initial_members => $mon_initial_members,
+      mon_host            => $mon_host,
+    }
+    include ::ceph::conf
     include ::ceph::profile::mon
   }
 
@@ -472,10 +554,20 @@ MYSQL_HOST=localhost\n",
       } -> Class['ceph::profile::osd']
     }
 
+    include ::ceph::conf
     include ::ceph::profile::osd
   }
 
   if str2bool(hiera('enable_external_ceph', false)) {
+    if str2bool(hiera('ceph_ipv6', false)) {
+      $mon_host = hiera('ceph_mon_host_v6')
+    } else {
+      $mon_host = hiera('ceph_mon_host')
+    }
+    class { '::ceph::profile::params':
+      mon_host            => $mon_host,
+    }
+    include ::ceph::conf
     include ::ceph::profile::client
   }
 
@@ -489,11 +581,10 @@ if hiera('step') >= 3 {
     manage_service => false,
     enabled        => false,
   }
+  include ::keystone::config
 
   #TODO: need a cleanup-keystone-tokens.sh solution here
-  keystone_config {
-    'ec2/driver': value => 'keystone.contrib.ec2.backends.sql.Ec2';
-  }
+
   file { [ '/etc/keystone/ssl', '/etc/keystone/ssl/certs', '/etc/keystone/ssl/private' ]:
     ensure  => 'directory',
     owner   => 'keystone',
@@ -544,6 +635,7 @@ if hiera('step') >= 3 {
 
   # TODO: notifications, scrubber, etc.
   include ::glance
+  include ::glance::config
   class { '::glance::api':
     known_stores   => $glance_store,
     manage_service => false,
@@ -554,10 +646,18 @@ if hiera('step') >= 3 {
     manage_service => false,
     enabled        => false,
   }
+  include ::glance::notify::rabbitmq
   include join(['::glance::backend::', $glance_backend])
 
+  $nova_ipv6 = hiera('nova::use_ipv6', false)
+  if $nova_ipv6 {
+    $memcached_servers = suffix(hiera('memcache_node_ips_v6'), ':11211')
+  } else {
+    $memcached_servers = suffix(hiera('memcache_node_ips'), ':11211')
+  }
+
   class { '::nova' :
-    memcached_servers => suffix(hiera('memcache_node_ips'), ':11211'),
+    memcached_servers => $memcached_servers
   }
 
   include ::nova::config
@@ -590,53 +690,118 @@ if hiera('step') >= 3 {
   }
   include ::nova::network::neutron
 
-  # Neutron class definitions
-  include ::neutron
+  if hiera('neutron::core_plugin') == 'midonet.neutron.plugin_v1.MidonetPluginV2' {
+
+    # TODO(devvesa) provide non-controller ips for these services
+    $zookeeper_node_ips = hiera('neutron_api_node_ips')
+    $cassandra_node_ips = hiera('neutron_api_node_ips')
+
+    # Run zookeeper in the controller if configured
+    if hiera('enable_zookeeper_on_controller') {
+      class {'::tripleo::cluster::zookeeper':
+        zookeeper_server_ips => $zookeeper_node_ips,
+        # TODO: create a 'bind' hiera key for zookeeper
+        zookeeper_client_ip  => hiera('neutron::bind_host'),
+        zookeeper_hostnames  => split(hiera('controller_node_names'), ',')
+      }
+    }
+
+    # Run cassandra in the controller if configured
+    if hiera('enable_cassandra_on_controller') {
+      class {'::tripleo::cluster::cassandra':
+        cassandra_servers => $cassandra_node_ips,
+        # TODO: create a 'bind' hiera key for cassandra
+        cassandra_ip      => hiera('neutron::bind_host'),
+      }
+    }
+
+    class {'::tripleo::network::midonet::agent':
+      zookeeper_servers => $zookeeper_node_ips,
+      cassandra_seeds   => $cassandra_node_ips
+    }
+
+    class {'::tripleo::network::midonet::api':
+      zookeeper_servers    => $zookeeper_node_ips,
+      vip                  => hiera('tripleo::loadbalancer::public_virtual_ip'),
+      keystone_ip          => hiera('tripleo::loadbalancer::public_virtual_ip'),
+      keystone_admin_token => hiera('keystone::admin_token'),
+      # TODO: create a 'bind' hiera key for api
+      bind_address         => hiera('neutron::bind_host'),
+      admin_password       => hiera('admin_password')
+    }
+
+    # Configure Neutron
+    class {'::neutron':
+      service_plugins => []
+    }
+
+  }
+  else {
+    # Neutron class definitions
+    include ::neutron
+  }
+
+  include ::neutron::config
   class { '::neutron::server' :
     sync_db        => $sync_db,
     manage_service => false,
     enabled        => false,
   }
   include ::neutron::server::notifications
-  class { '::neutron::agents::dhcp' :
-    manage_service => false,
-    enabled        => false,
-  }
-  class { '::neutron::agents::l3' :
-    manage_service => false,
-    enabled        => false,
-  }
-  class { '::neutron::agents::metadata':
-    manage_service => false,
-    enabled        => false,
-  }
-  file { '/etc/neutron/dnsmasq-neutron.conf':
-    content => hiera('neutron_dnsmasq_options'),
-    owner   => 'neutron',
-    group   => 'neutron',
-    notify  => Service['neutron-dhcp-service'],
-    require => Package['neutron'],
-  }
-  class { '::neutron::plugins::ml2':
-    flat_networks        => split(hiera('neutron_flat_networks'), ','),
-    tenant_network_types => [hiera('neutron_tenant_network_type')],
-    mechanism_drivers    => [hiera('neutron_mechanism_drivers')],
-  }
-  class { '::neutron::agents::ml2::ovs':
-    manage_service  => false,
-    enabled         => false,
-    bridge_mappings => split(hiera('neutron_bridge_mappings'), ','),
-    tunnel_types    => split(hiera('neutron_tunnel_types'), ','),
-  }
 
-  if 'cisco_ucsm' in hiera('neutron_mechanism_drivers') {
+  if  hiera('neutron::core_plugin') == 'neutron.plugins.nuage.plugin.NuagePlugin' {
+    include ::neutron::plugins::nuage
+  }
+  if  hiera('neutron::core_plugin') == 'neutron_plugin_contrail.plugins.opencontrail.contrail_plugin.NeutronPluginContrailCoreV2' {
+    include ::neutron::plugins::opencontrail
+  }
+  if hiera('neutron::core_plugin') == 'midonet.neutron.plugin_v1.MidonetPluginV2' {
+    class {'::neutron::plugins::midonet':
+      midonet_api_ip    => hiera('tripleo::loadbalancer::public_virtual_ip'),
+      keystone_tenant   => hiera('neutron::server::auth_tenant'),
+      keystone_password => hiera('neutron::server::auth_password')
+    }
+  }
+  if hiera('neutron::enable_dhcp_agent',true) {
+    class { '::neutron::agents::dhcp' :
+      manage_service => false,
+      enabled        => false,
+    }
+    file { '/etc/neutron/dnsmasq-neutron.conf':
+      content => hiera('neutron_dnsmasq_options'),
+      owner   => 'neutron',
+      group   => 'neutron',
+      notify  => Service['neutron-dhcp-service'],
+      require => Package['neutron'],
+    }
+  }
+  if hiera('neutron::enable_l3_agent',true) {
+    class { '::neutron::agents::l3' :
+      manage_service => false,
+      enabled        => false,
+    }
+  }
+  if hiera('neutron::enable_metadata_agent',true) {
+    class { '::neutron::agents::metadata':
+      manage_service => false,
+      enabled        => false,
+    }
+  }
+  if hiera('neutron::core_plugin') == 'ml2' {
+    include ::neutron::plugins::ml2
+    class { '::neutron::agents::ml2::ovs':
+      manage_service => false,
+      enabled        => false,
+    }
+  }
+  if 'cisco_ucsm' in hiera('neutron::plugins::ml2::mechanism_drivers') {
     include ::neutron::plugins::ml2::cisco::ucsm
   }
-  if 'cisco_nexus' in hiera('neutron_mechanism_drivers') {
+  if 'cisco_nexus' in hiera('neutron::plugins::ml2::mechanism_drivers') {
     include ::neutron::plugins::ml2::cisco::nexus
     include ::neutron::plugins::ml2::cisco::type_nexus_vxlan
   }
-  if 'cisco_n1kv' in hiera('neutron_mechanism_drivers') {
+  if 'cisco_n1kv' in hiera('neutron::plugins::ml2::mechanism_drivers') {
     include ::neutron::plugins::ml2::cisco::nexus1000v
 
     class { '::neutron::agents::n1kv_vem':
@@ -650,8 +815,9 @@ if hiera('step') >= 3 {
     }
   }
 
-  if hiera('neutron_enable_bigswitch_ml2', false) {
+  if 'bsn_ml2' in hiera('neutron::plugins::ml2::mechanism_drivers') {
     include ::neutron::plugins::ml2::bigswitch::restproxy
+    include ::neutron::agents::bigswitch
   }
   neutron_l3_agent_config {
     'DEFAULT/ovs_use_veth': value => hiera('neutron_ovs_use_veth', false);
@@ -659,8 +825,12 @@ if hiera('step') >= 3 {
   neutron_dhcp_agent_config {
     'DEFAULT/ovs_use_veth': value => hiera('neutron_ovs_use_veth', false);
   }
+  neutron_config {
+    'DEFAULT/notification_driver': value => 'messaging';
+  }
 
   include ::cinder
+  include ::cinder::config
   class { '::cinder::api':
     sync_db        => $sync_db,
     manage_service => false,
@@ -675,6 +845,7 @@ if hiera('step') >= 3 {
     enabled        => false,
   }
   include ::cinder::glance
+  include ::cinder::ceilometer
   class { '::cinder::setup_test_volume':
     size => join([hiera('cinder_lvm_loop_device_size'), 'M']),
   }
@@ -691,14 +862,12 @@ if hiera('step') >= 3 {
 
   if $enable_ceph {
 
-    Ceph_pool {
+    $ceph_pools = hiera('ceph_pools')
+    ceph::pool { $ceph_pools :
       pg_num  => hiera('ceph::profile::params::osd_pool_default_pg_num'),
       pgp_num => hiera('ceph::profile::params::osd_pool_default_pgp_num'),
       size    => hiera('ceph::profile::params::osd_pool_default_size'),
     }
-
-    $ceph_pools = hiera('ceph_pools')
-    ceph::pool { $ceph_pools : }
 
     $cinder_pool_requires = [Ceph::Pool[hiera('cinder_rbd_pool_name')]]
 
@@ -720,10 +889,6 @@ if hiera('step') >= 3 {
   if hiera('cinder_enable_eqlx_backend', false) {
     $cinder_eqlx_backend = hiera('cinder::backend::eqlx::volume_backend_name')
 
-    cinder_config {
-      "${cinder_eqlx_backend}/host": value => 'hostgroup';
-    }
-
     cinder::backend::eqlx { $cinder_eqlx_backend :
       volume_backend_name => hiera('cinder::backend::eqlx::volume_backend_name', undef),
       san_ip              => hiera('cinder::backend::eqlx::san_ip', undef),
@@ -741,10 +906,6 @@ if hiera('step') >= 3 {
   if hiera('cinder_enable_dellsc_backend', false) {
     $cinder_dellsc_backend = hiera('cinder::backend::dellsc_iscsi::volume_backend_name')
 
-    cinder_config {
-      "${cinder_dellsc_backend}/host": value => 'hostgroup';
-    }
-
     cinder::backend::dellsc_iscsi{ $cinder_dellsc_backend :
       volume_backend_name   => hiera('cinder::backend::dellsc_iscsi::volume_backend_name', undef),
       san_ip                => hiera('cinder::backend::dellsc_iscsi::san_ip', undef),
@@ -753,7 +914,7 @@ if hiera('step') >= 3 {
       dell_sc_ssn           => hiera('cinder::backend::dellsc_iscsi::dell_sc_ssn', undef),
       iscsi_ip_address      => hiera('cinder::backend::dellsc_iscsi::iscsi_ip_address', undef),
       iscsi_port            => hiera('cinder::backend::dellsc_iscsi::iscsi_port', undef),
-      dell_sc_port          => hiera('cinder::backend::dellsc_iscsi::dell_sc_port', undef),
+      dell_sc_api_port      => hiera('cinder::backend::dellsc_iscsi::dell_sc_api_port', undef),
       dell_sc_server_folder => hiera('cinder::backend::dellsc_iscsi::dell_sc_server_folder', undef),
       dell_sc_volume_folder => hiera('cinder::backend::dellsc_iscsi::dell_sc_volume_folder', undef),
     }
@@ -761,10 +922,6 @@ if hiera('step') >= 3 {
 
   if hiera('cinder_enable_netapp_backend', false) {
     $cinder_netapp_backend = hiera('cinder::backend::netapp::title')
-
-    cinder_config {
-      "${cinder_netapp_backend}/host": value => 'hostgroup';
-    }
 
     if hiera('cinder::backend::netapp::nfs_shares', undef) {
       $cinder_netapp_nfs_shares = split(hiera('cinder::backend::netapp::nfs_shares', undef), ',')
@@ -807,14 +964,14 @@ if hiera('step') >= 3 {
     package { 'nfs-utils': } ->
     cinder::backend::nfs { $cinder_nfs_backend:
       nfs_servers       => hiera('cinder_nfs_servers'),
-      nfs_mount_options => hiera('cinder_nfs_mount_options'),
+      nfs_mount_options => hiera('cinder_nfs_mount_options',''),
       nfs_shares_config => '/etc/cinder/shares-nfs.conf',
     }
   }
 
   $cinder_enabled_backends = delete_undef_values([$cinder_iscsi_backend, $cinder_rbd_backend, $cinder_eqlx_backend, $cinder_dellsc_backend, $cinder_netapp_backend, $cinder_nfs_backend])
   class { '::cinder::backends' :
-    enabled_backends => $cinder_enabled_backends,
+    enabled_backends => union($cinder_enabled_backends, hiera('cinder_user_enabled_backends')),
   }
 
   # swift proxy
@@ -909,8 +1066,9 @@ if hiera('step') >= 3 {
   Cron <| title == 'ceilometer-expirer' |> { command => "sleep $((\$(od -A n -t d -N 3 /dev/urandom) % 86400)) && ${::ceilometer::params::expirer_command}" }
 
   # Heat
+  include ::heat::config
   class { '::heat' :
-    sync_db => $sync_db,
+    sync_db             => $sync_db,
   }
   class { '::heat::api' :
     manage_service => false,
@@ -936,7 +1094,7 @@ if hiera('step') >= 3 {
     # service_manage => false, # <-- not supported with horizon&apache mod_wsgi?
   }
   include ::apache::mod::status
-  if 'cisco_n1kv' in hiera('neutron_mechanism_drivers') {
+  if 'cisco_n1kv' in hiera('neutron::plugins::ml2::mechanism_drivers') {
     $_profile_support = 'cisco'
   } else {
     $_profile_support = 'None'
@@ -954,7 +1112,7 @@ if hiera('step') >= 3 {
   }
   class { '::snmp':
     agentaddress => ['udp:161','udp6:[::1]:161'],
-    snmpd_config => [ join(['rouser ', hiera('snmpd_readonly_user_name')]), 'proc  cron', 'includeAllDisks  10%', 'master agentx', 'trapsink localhost public', 'iquerySecName internalUser', 'rouser internalUser', 'defaultMonitors yes', 'linkUpDownNotifications yes' ],
+    snmpd_config => [ join(['createUser ', hiera('snmpd_readonly_user_name'), ' MD5 "', hiera('snmpd_readonly_user_password'), '"']), join(['rouser ', hiera('snmpd_readonly_user_name')]), 'proc  cron', 'includeAllDisks  10%', 'master agentx', 'trapsink localhost public', 'iquerySecName internalUser', 'rouser internalUser', 'defaultMonitors yes', 'linkUpDownNotifications yes' ],
   }
 
   hiera_include('controller_classes')
@@ -962,7 +1120,19 @@ if hiera('step') >= 3 {
 } #END STEP 3
 
 if hiera('step') >= 4 {
-  include ::keystone::cron::token_flush
+  $keystone_enable_db_purge = hiera('keystone_enable_db_purge', true)
+  $nova_enable_db_purge = hiera('nova_enable_db_purge', true)
+  $cinder_enable_db_purge = hiera('cinder_enable_db_purge', true)
+
+  if $keystone_enable_db_purge {
+    include ::keystone::cron::token_flush
+  }
+  if $nova_enable_db_purge {
+    include ::nova::cron::archive_deleted_rows
+  }
+  if $cinder_enable_db_purge {
+    include ::cinder::cron::db_purge
+  }
 
   if $pacemaker_master {
 
@@ -1123,62 +1293,76 @@ if hiera('step') >= 4 {
         require      => Pacemaker::Resource::Service[$::keystone::params::service_name]
       }
     }
-    pacemaker::resource::service { $::neutron::params::l3_agent_service:
-      clone_params => 'interleave=true',
+    if hiera('neutron::enable_l3_agent', true) {
+      pacemaker::resource::service { $::neutron::params::l3_agent_service:
+        clone_params => 'interleave=true',
+      }
     }
-    pacemaker::resource::service { $::neutron::params::dhcp_agent_service:
-      clone_params => 'interleave=true',
+    if hiera('neutron::enable_dhcp_agent', true) {
+      pacemaker::resource::service { $::neutron::params::dhcp_agent_service:
+        clone_params => 'interleave=true',
+      }
     }
-    pacemaker::resource::service { $::neutron::params::ovs_agent_service:
-      clone_params => 'interleave=true',
+    if hiera('neutron::enable_ovs_agent', true) {
+      pacemaker::resource::service { $::neutron::params::ovs_agent_service:
+        clone_params => 'interleave=true',
+      }
     }
-    pacemaker::resource::service { $::neutron::params::metadata_agent_service:
-      clone_params => 'interleave=true',
+    if hiera('neutron::core_plugin') == 'midonet.neutron.plugin_v1.MidonetPluginV2' {
+      pacemaker::resource::service {'tomcat':
+        clone_params => 'interleave=true',
+      }
     }
-    pacemaker::resource::ocf { $::neutron::params::ovs_cleanup_service:
-      ocf_agent_name => 'neutron:OVSCleanup',
-      clone_params   => 'interleave=true',
+    if hiera('neutron::enable_metadata_agent', true) {
+      pacemaker::resource::service { $::neutron::params::metadata_agent_service:
+        clone_params => 'interleave=true',
+      }
     }
-    pacemaker::resource::ocf { 'neutron-netns-cleanup':
-      ocf_agent_name => 'neutron:NetnsCleanup',
-      clone_params   => 'interleave=true',
+    if hiera('neutron::enable_ovs_agent', true) {
+      pacemaker::resource::ocf { $::neutron::params::ovs_cleanup_service:
+        ocf_agent_name => 'neutron:OVSCleanup',
+        clone_params   => 'interleave=true',
+      }
+      pacemaker::resource::ocf { 'neutron-netns-cleanup':
+        ocf_agent_name => 'neutron:NetnsCleanup',
+        clone_params   => 'interleave=true',
+      }
+
+      # neutron - one chain ovs-cleanup-->netns-cleanup-->ovs-agent
+      pacemaker::constraint::base { 'neutron-ovs-cleanup-to-netns-cleanup-constraint':
+        constraint_type => 'order',
+        first_resource  => "${::neutron::params::ovs_cleanup_service}-clone",
+        second_resource => 'neutron-netns-cleanup-clone',
+        first_action    => 'start',
+        second_action   => 'start',
+        require         => [Pacemaker::Resource::Ocf[$::neutron::params::ovs_cleanup_service],
+                            Pacemaker::Resource::Ocf['neutron-netns-cleanup']],
+      }
+      pacemaker::constraint::colocation { 'neutron-ovs-cleanup-to-netns-cleanup-colocation':
+        source  => 'neutron-netns-cleanup-clone',
+        target  => "${::neutron::params::ovs_cleanup_service}-clone",
+        score   => 'INFINITY',
+        require => [Pacemaker::Resource::Ocf[$::neutron::params::ovs_cleanup_service],
+                    Pacemaker::Resource::Ocf['neutron-netns-cleanup']],
+      }
+      pacemaker::constraint::base { 'neutron-netns-cleanup-to-openvswitch-agent-constraint':
+        constraint_type => 'order',
+        first_resource  => 'neutron-netns-cleanup-clone',
+        second_resource => "${::neutron::params::ovs_agent_service}-clone",
+        first_action    => 'start',
+        second_action   => 'start',
+        require         => [Pacemaker::Resource::Ocf['neutron-netns-cleanup'],
+                            Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service]],
+      }
+      pacemaker::constraint::colocation { 'neutron-netns-cleanup-to-openvswitch-agent-colocation':
+        source  => "${::neutron::params::ovs_agent_service}-clone",
+        target  => 'neutron-netns-cleanup-clone',
+        score   => 'INFINITY',
+        require => [Pacemaker::Resource::Ocf['neutron-netns-cleanup'],
+                    Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service]],
+      }
     }
 
-    # neutron - one chain ovs-cleanup-->netns-cleanup-->ovs-agent
-    pacemaker::constraint::base { 'neutron-ovs-cleanup-to-netns-cleanup-constraint':
-      constraint_type => 'order',
-      first_resource  => "${::neutron::params::ovs_cleanup_service}-clone",
-      second_resource => 'neutron-netns-cleanup-clone',
-      first_action    => 'start',
-      second_action   => 'start',
-      require         => [Pacemaker::Resource::Ocf[$::neutron::params::ovs_cleanup_service],
-                          Pacemaker::Resource::Ocf['neutron-netns-cleanup']],
-    }
-    pacemaker::constraint::colocation { 'neutron-ovs-cleanup-to-netns-cleanup-colocation':
-      source  => 'neutron-netns-cleanup-clone',
-      target  => "${::neutron::params::ovs_cleanup_service}-clone",
-      score   => 'INFINITY',
-      require => [Pacemaker::Resource::Ocf[$::neutron::params::ovs_cleanup_service],
-                  Pacemaker::Resource::Ocf['neutron-netns-cleanup']],
-    }
-    pacemaker::constraint::base { 'neutron-netns-cleanup-to-openvswitch-agent-constraint':
-      constraint_type => 'order',
-      first_resource  => 'neutron-netns-cleanup-clone',
-      second_resource => "${::neutron::params::ovs_agent_service}-clone",
-      first_action    => 'start',
-      second_action   => 'start',
-      require         => [Pacemaker::Resource::Ocf['neutron-netns-cleanup'],
-                          Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service]],
-    }
-    pacemaker::constraint::colocation { 'neutron-netns-cleanup-to-openvswitch-agent-colocation':
-      source  => "${::neutron::params::ovs_agent_service}-clone",
-      target  => 'neutron-netns-cleanup-clone',
-      score   => 'INFINITY',
-      require => [Pacemaker::Resource::Ocf['neutron-netns-cleanup'],
-                  Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service]],
-    }
-
-    #another chain keystone-->neutron-server-->ovs-agent-->dhcp-->l3
     pacemaker::constraint::base { 'keystone-to-neutron-server-constraint':
       constraint_type => 'order',
       first_resource  => "${::keystone::params::service_name}-clone",
@@ -1188,86 +1372,126 @@ if hiera('step') >= 4 {
       require         => [Pacemaker::Resource::Service[$::keystone::params::service_name],
                           Pacemaker::Resource::Service[$::neutron::params::server_service]],
     }
-    pacemaker::constraint::base { 'neutron-server-to-openvswitch-agent-constraint':
-      constraint_type => 'order',
-      first_resource  => "${::neutron::params::server_service}-clone",
-      second_resource => "${::neutron::params::ovs_agent_service}-clone",
-      first_action    => 'start',
-      second_action   => 'start',
-      require         => [Pacemaker::Resource::Service[$::neutron::params::server_service],
-                          Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service]],
+    if hiera('neutron::enable_ovs_agent',true) {
+      pacemaker::constraint::base { 'neutron-server-to-openvswitch-agent-constraint':
+        constraint_type => 'order',
+        first_resource  => "${::neutron::params::server_service}-clone",
+        second_resource => "${::neutron::params::ovs_agent_service}-clone",
+        first_action    => 'start',
+        second_action   => 'start',
+        require         => [Pacemaker::Resource::Service[$::neutron::params::server_service],
+                            Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service]],
+      }
     }
-    pacemaker::constraint::base { 'neutron-openvswitch-agent-to-dhcp-agent-constraint':
-      constraint_type => 'order',
-      first_resource  => "${::neutron::params::ovs_agent_service}-clone",
-      second_resource => "${::neutron::params::dhcp_agent_service}-clone",
-      first_action    => 'start',
-      second_action   => 'start',
-      require         => [Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service],
-                          Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service]],
+    if hiera('neutron::enable_dhcp_agent',true) and hiera('neutron::enable_ovs_agent',true) {
+      pacemaker::constraint::base { 'neutron-openvswitch-agent-to-dhcp-agent-constraint':
+        constraint_type => 'order',
+        first_resource  => "${::neutron::params::ovs_agent_service}-clone",
+        second_resource => "${::neutron::params::dhcp_agent_service}-clone",
+        first_action    => 'start',
+        second_action   => 'start',
+        require         => [Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service],
+                            Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service]],
 
+      }
+      pacemaker::constraint::colocation { 'neutron-openvswitch-agent-to-dhcp-agent-colocation':
+        source  => "${::neutron::params::dhcp_agent_service}-clone",
+        target  => "${::neutron::params::ovs_agent_service}-clone",
+        score   => 'INFINITY',
+        require => [Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service],
+                    Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service]],
+      }
     }
-    pacemaker::constraint::colocation { 'neutron-openvswitch-agent-to-dhcp-agent-colocation':
-      source  => "${::neutron::params::dhcp_agent_service}-clone",
-      target  => "${::neutron::params::ovs_agent_service}-clone",
-      score   => 'INFINITY',
-      require => [Pacemaker::Resource::Service[$::neutron::params::ovs_agent_service],
-                  Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service]],
+    if hiera('neutron::enable_dhcp_agent',true) and hiera('l3_agent_service',true) {
+      pacemaker::constraint::base { 'neutron-dhcp-agent-to-l3-agent-constraint':
+        constraint_type => 'order',
+        first_resource  => "${::neutron::params::dhcp_agent_service}-clone",
+        second_resource => "${::neutron::params::l3_agent_service}-clone",
+        first_action    => 'start',
+        second_action   => 'start',
+        require         => [Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service],
+                            Pacemaker::Resource::Service[$::neutron::params::l3_agent_service]]
+      }
+      pacemaker::constraint::colocation { 'neutron-dhcp-agent-to-l3-agent-colocation':
+        source  => "${::neutron::params::l3_agent_service}-clone",
+        target  => "${::neutron::params::dhcp_agent_service}-clone",
+        score   => 'INFINITY',
+        require => [Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service],
+                    Pacemaker::Resource::Service[$::neutron::params::l3_agent_service]]
+      }
     }
-    pacemaker::constraint::base { 'neutron-dhcp-agent-to-l3-agent-constraint':
-      constraint_type => 'order',
-      first_resource  => "${::neutron::params::dhcp_agent_service}-clone",
-      second_resource => "${::neutron::params::l3_agent_service}-clone",
-      first_action    => 'start',
-      second_action   => 'start',
-      require         => [Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service],
-                          Pacemaker::Resource::Service[$::neutron::params::l3_agent_service]],
+    if hiera('neutron::enable_l3_agent',true) and hiera('neutron::enable_metadata_agent',true) {
+      pacemaker::constraint::base { 'neutron-l3-agent-to-metadata-agent-constraint':
+        constraint_type => 'order',
+        first_resource  => "${::neutron::params::l3_agent_service}-clone",
+        second_resource => "${::neutron::params::metadata_agent_service}-clone",
+        first_action    => 'start',
+        second_action   => 'start',
+        require         => [Pacemaker::Resource::Service[$::neutron::params::l3_agent_service],
+                            Pacemaker::Resource::Service[$::neutron::params::metadata_agent_service]]
+      }
+      pacemaker::constraint::colocation { 'neutron-l3-agent-to-metadata-agent-colocation':
+        source  => "${::neutron::params::metadata_agent_service}-clone",
+        target  => "${::neutron::params::l3_agent_service}-clone",
+        score   => 'INFINITY',
+        require => [Pacemaker::Resource::Service[$::neutron::params::l3_agent_service],
+                    Pacemaker::Resource::Service[$::neutron::params::metadata_agent_service]]
+      }
     }
-    pacemaker::constraint::colocation { 'neutron-dhcp-agent-to-l3-agent-colocation':
-      source  => "${::neutron::params::l3_agent_service}-clone",
-      target  => "${::neutron::params::dhcp_agent_service}-clone",
-      score   => 'INFINITY',
-      require => [Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service],
-                  Pacemaker::Resource::Service[$::neutron::params::l3_agent_service]],
-    }
-    pacemaker::constraint::base { 'neutron-l3-agent-to-metadata-agent-constraint':
-      constraint_type => 'order',
-      first_resource  => "${::neutron::params::l3_agent_service}-clone",
-      second_resource => "${::neutron::params::metadata_agent_service}-clone",
-      first_action    => 'start',
-      second_action   => 'start',
-      require         => [Pacemaker::Resource::Service[$::neutron::params::l3_agent_service],
-                          Pacemaker::Resource::Service[$::neutron::params::metadata_agent_service]],
-    }
-    pacemaker::constraint::colocation { 'neutron-l3-agent-to-metadata-agent-colocation':
-      source  => "${::neutron::params::metadata_agent_service}-clone",
-      target  => "${::neutron::params::l3_agent_service}-clone",
-      score   => 'INFINITY',
-      require => [Pacemaker::Resource::Service[$::neutron::params::l3_agent_service],
-                  Pacemaker::Resource::Service[$::neutron::params::metadata_agent_service]],
+    if hiera('neutron::core_plugin') == 'midonet.neutron.plugin_v1.MidonetPluginV2' {
+      #midonet-chain chain keystone-->neutron-server-->dhcp-->metadata->tomcat
+      pacemaker::constraint::base { 'neutron-server-to-dhcp-agent-constraint':
+        constraint_type => 'order',
+        first_resource  => "${::neutron::params::server_service}-clone",
+        second_resource => "${::neutron::params::dhcp_agent_service}-clone",
+        first_action    => 'start',
+        second_action   => 'start',
+        require         => [Pacemaker::Resource::Service[$::neutron::params::server_service],
+                            Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service]],
+      }
+      pacemaker::constraint::base { 'neutron-dhcp-agent-to-metadata-agent-constraint':
+        constraint_type => 'order',
+        first_resource  => "${::neutron::params::dhcp_agent_service}-clone",
+        second_resource => "${::neutron::params::metadata_agent_service}-clone",
+        first_action    => 'start',
+        second_action   => 'start',
+        require         => [Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service],
+                            Pacemaker::Resource::Service[$::neutron::params::metadata_agent_service]],
+      }
+      pacemaker::constraint::base { 'neutron-metadata-agent-to-tomcat-constraint':
+        constraint_type => 'order',
+        first_resource  => "${::neutron::params::metadata_agent_service}-clone",
+        second_resource => 'tomcat-clone',
+        first_action    => 'start',
+        second_action   => 'start',
+        require         => [Pacemaker::Resource::Service[$::neutron::params::metadata_agent_service],
+                            Pacemaker::Resource::Service['tomcat']],
+      }
+      pacemaker::constraint::colocation { 'neutron-dhcp-agent-to-metadata-agent-colocation':
+        source  => "${::neutron::params::metadata_agent_service}-clone",
+        target  => "${::neutron::params::dhcp_agent_service}-clone",
+        score   => 'INFINITY',
+        require => [Pacemaker::Resource::Service[$::neutron::params::dhcp_agent_service],
+                    Pacemaker::Resource::Service[$::neutron::params::metadata_agent_service]],
+      }
     }
 
     # Nova
     pacemaker::resource::service { $::nova::params::api_service_name :
       clone_params => 'interleave=true',
-      op_params    => 'start timeout=100s stop timeout=100s monitor start-delay=10s',
     }
     pacemaker::resource::service { $::nova::params::conductor_service_name :
       clone_params => 'interleave=true',
-      op_params    => 'start timeout=100s stop timeout=100s monitor start-delay=10s',
     }
     pacemaker::resource::service { $::nova::params::consoleauth_service_name :
       clone_params => 'interleave=true',
-      op_params    => 'start timeout=100s stop timeout=100s monitor start-delay=10s',
       require      => Pacemaker::Resource::Service[$::keystone::params::service_name],
     }
     pacemaker::resource::service { $::nova::params::vncproxy_service_name :
       clone_params => 'interleave=true',
-      op_params    => 'start timeout=100s stop timeout=100s monitor start-delay=10s',
     }
     pacemaker::resource::service { $::nova::params::scheduler_service_name :
       clone_params => 'interleave=true',
-      op_params    => 'start timeout=100s stop timeout=100s monitor start-delay=10s',
     }
 
     pacemaker::constraint::base { 'keystone-then-nova-consoleauth-constraint':
@@ -1592,7 +1816,7 @@ if hiera('step') >= 4 {
     }
 
     #VSM
-    if 'cisco_n1kv' in hiera('neutron_mechanism_drivers') {
+    if 'cisco_n1kv' in hiera('neutron::plugins::ml2::mechanism_drivers') {
       pacemaker::resource::ocf { 'vsm-p' :
         ocf_agent_name  => 'heartbeat:VirtualDomain',
         resource_params => 'force_stop=true config=/var/spool/cisco/vsm/vsm_primary_deploy.xml',

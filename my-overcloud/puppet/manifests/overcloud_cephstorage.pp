@@ -16,11 +16,15 @@
 include ::tripleo::packages
 include ::tripleo::firewall
 
+create_resources(kmod::load, hiera('kernel_modules'), {})
 create_resources(sysctl::value, hiera('sysctl_settings'), {})
+Exec <| tag == 'kmod::load' |>  -> Sysctl <| |>
 
 if count(hiera('ntp::servers')) > 0 {
   include ::ntp
 }
+
+include ::timezone
 
 if str2bool(hiera('ceph_osd_selinux_permissive', true)) {
   exec { 'set selinux to permissive on boot':
@@ -36,6 +40,15 @@ if str2bool(hiera('ceph_osd_selinux_permissive', true)) {
   } -> Class['ceph::profile::osd']
 }
 
+if str2bool(hiera('ceph_ipv6', false)) {
+  $mon_host = hiera('ceph_mon_host_v6')
+} else {
+  $mon_host = hiera('ceph_mon_host')
+}
+class { '::ceph::profile::params':
+  mon_host            => $mon_host,
+}
+include ::ceph::conf
 include ::ceph::profile::client
 include ::ceph::profile::osd
 
