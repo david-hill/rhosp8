@@ -1,0 +1,15 @@
+parameter_defaults:
+  UpgradeLevelNovaCompute: kilo
+  UpgradeInitCommand: |
+    set -e
+    subscription-manager repos --disable=rhel-7-server-openstack-7.0-rpms --disable=rhel-7-server-openstack-7.0-director-rpms
+    subscription-manager repos --enable=rhel-7-server-openstack-8.0-rpms --enable=rhel-7-server-openstack-8.0-director-rpms
+
+resource_registry:
+  OS::TripleO::Tasks::UpdateWorkflow: ../extraconfig/tasks/major_upgrade_pacemaker_init.yaml
+  OS::TripleO::Tasks::PackageUpdate:  ../extraconfig/tasks/yum_update_noop.yaml
+  OS::TripleO::ControllerPostDeployment: OS::Heat::None
+  OS::TripleO::ComputePostDeployment: OS::Heat::None
+  OS::TripleO::ObjectStoragePostDeployment: OS::Heat::None
+  OS::TripleO::BlockStoragePostDeployment: OS::Heat::None
+  OS::TripleO::CephStoragePostDeployment: OS::Heat::None
