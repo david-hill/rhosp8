@@ -28,6 +28,10 @@ parameters:
   NodeIndex: # Here for compatibility with from_pool.yaml
     default: 0
     type: number
+  NetworkName:
+    description: # Here for compatibility with vip.yaml
+    default: internal_api
+    type: string
 
 resources:
 

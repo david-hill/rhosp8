@@ -1310,7 +1310,7 @@ resources:
       ControlPlaneIP: {get_attr: [ControlVirtualIP, fixed_ips, 0, ip_address]}
       PortName: internal_api_virtual_ip
       FixedIPs: {get_param: InternalApiVirtualFixedIPs}
-      NetworkName: external
+      NetworkName: internal_api
 
   StorageVirtualIP:
     depends_on: Networks
@@ -1319,7 +1319,7 @@ resources:
       ControlPlaneIP: {get_attr: [ControlVirtualIP, fixed_ips, 0, ip_address]}
       PortName: storage_virtual_ip
       FixedIPs: {get_param: StorageVirtualFixedIPs}
-      NetworkName: external
+      NetworkName: storage
 
   StorageMgmtVirtualIP:
     depends_on: Networks
@@ -1328,7 +1328,7 @@ resources:
       ControlPlaneIP: {get_attr: [ControlVirtualIP, fixed_ips, 0, ip_address]}
       PortName: storage_management_virtual_ip
       FixedIPs: {get_param: StorageMgmtVirtualFixedIPs}
-      NetworkName: external
+      NetworkName: storage_mgmt
 
   VipMap:
     type: OS::TripleO::Network::Ports::NetVipMap
