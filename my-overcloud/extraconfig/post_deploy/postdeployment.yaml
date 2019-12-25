@@ -20,8 +20,8 @@ resources:
         echo "extra" > /root/extra
 
   ExtraDeployments:
-    type: OS::Heat::SoftwareDeployments
+    type: OS::Heat::StructuredDeployments
     properties:
       servers:  {get_param: servers}
       config: {get_resource: ExtraConfig}
-      actions: ['CREATE'] # Only do this on CREATE
+      actions: ['CREATE','UPDATE'] 

@@ -43,19 +43,6 @@ parameters:
     type: string
   rhel_reg_method:
     type: string
-  rhel_reg_sat_repo:
-    type: string
-<<<<<<< HEAD
-=======
-  rhel_reg_http_proxy_host:
-    type: string
-  rhel_reg_http_proxy_port:
-    type: string
-  rhel_reg_http_proxy_username:
-    type: string
-  rhel_reg_http_proxy_password:
-    type: string
->>>>>>> 2c04151dedaa435a2a927377b4e5fa042b8fb6c0
 
 resources:
 
@@ -81,20 +68,11 @@ resources:
         - name: REG_USER
         - name: REG_TYPE
         - name: REG_METHOD
-        - name: REG_SAT_REPO
-<<<<<<< HEAD
-=======
-        - name: REG_HTTP_PROXY_HOST
-        - name: REG_HTTP_PROXY_PORT
-        - name: REG_HTTP_PROXY_USERNAME
-        - name: REG_HTTP_PROXY_PASSWORD
->>>>>>> 2c04151dedaa435a2a927377b4e5fa042b8fb6c0
       config: {get_file: scripts/rhel-registration}
 
   RHELRegistrationDeployment:
     type: OS::Heat::SoftwareDeployment
     properties:
-      name: RHELRegistrationDeployment
       server:  {get_param: server}
       config: {get_resource: RHELRegistration}
       actions: ['CREATE'] # Only do this on CREATE
@@ -116,14 +94,6 @@ resources:
         REG_USER: {get_param: rhel_reg_user}
         REG_TYPE: {get_param: rhel_reg_type}
         REG_METHOD: {get_param: rhel_reg_method}
-        REG_SAT_REPO: {get_param: rhel_reg_sat_repo}
-<<<<<<< HEAD
-=======
-        REG_HTTP_PROXY_HOST: {get_param: rhel_reg_http_proxy_host}
-        REG_HTTP_PROXY_PORT: {get_param: rhel_reg_http_proxy_port}
-        REG_HTTP_PROXY_USERNAME: {get_param: rhel_reg_http_proxy_username}
-        REG_HTTP_PROXY_PASSWORD: {get_param: rhel_reg_http_proxy_password}
->>>>>>> 2c04151dedaa435a2a927377b4e5fa042b8fb6c0
 
   RHELUnregistration:
     type: OS::Heat::SoftwareConfig
@@ -136,7 +106,6 @@ resources:
   RHELUnregistrationDeployment:
     type: OS::Heat::SoftwareDeployment
     properties:
-      name: RHELUnregistrationDeployment
       server:  {get_param: server}
       config: {get_resource: RHELUnregistration}
       actions: ['DELETE'] # Only do this on DELETE

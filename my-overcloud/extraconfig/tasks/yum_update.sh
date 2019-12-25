@@ -24,7 +24,6 @@ update_identifier=${update_identifier//[^a-zA-Z0-9-_]/}
 # seconds to wait for this node to rejoin the cluster after update
 cluster_start_timeout=600
 galera_sync_timeout=360
-cluster_settle_timeout=1800
 
 timestamp_file="$timestamp_dir/$update_identifier"
 if [[ -a "$timestamp_file" ]]; then
@@ -33,17 +32,7 @@ if [[ -a "$timestamp_file" ]]; then
 fi
 touch "$timestamp_file"
 
-# install openstack-nova-migration on computes prior to checking for updates
-echo "Checking openstack-nova-migration is installed"
-if ! yum -q list installed openstack-nova-migration > /dev/null 2>&1; then
-    echo "Installing openstack-nova-migration"
-    yum -q -y install openstack-nova-migration
-fi
-
 command_arguments=${command_arguments:-}
-
-# Always ensure yum has full cache
-yum makecache || echo "Yum makecache failed. This can cause failure later on."
 
 list_updates=$(yum list updates)
 
@@ -54,24 +43,6 @@ fi
 
 pacemaker_status=$(systemctl is-active pacemaker)
 pacemaker_dumpfile=$(mktemp)
-
-# Special-case OVS for https://bugs.launchpad.net/tripleo/+bug/1635205
-<<<<<<< HEAD
-if [[ -n $(rpm -q --scripts openvswitch | awk '/postuninstall/,/*/' | grep "systemctl.*try-restart") ]]; then
-    echo "Manual upgrade of openvswitch - restart in postun detected"
-    mkdir OVS_UPGRADE || true
-    pushd OVS_UPGRADE
-    echo "Attempting to downloading latest openvswitch with yumdownloader"
-    yumdownloader --resolve openvswitch
-    echo "Updating openvswitch with nopostun option"
-    rpm -U --replacepkgs --nopostun ./*.rpm
-    popd
-else
-    echo "Skipping manual upgrade of openvswitch - no restart in postun detected"
-fi
-=======
-special_case_ovs_upgrade_if_needed
->>>>>>> 2c04151dedaa435a2a927377b4e5fa042b8fb6c0
 
 if [[ "$pacemaker_status" == "active" ]] ; then
 SERVICES="memcached
@@ -151,19 +122,13 @@ openstack-nova-scheduler"
 
     echo "Setting resource start/stop timeouts"
     for service in $SERVICES; do
-        pcs -f $pacemaker_dumpfile resource update $service op start timeout=200s op stop timeout=200s
+        pcs -f $pacemaker_dumpfile resource update $service op start timeout=100s op stop timeout=100s
     done
     # mongod start timeout is higher, setting only stop timeout
-    pcs -f $pacemaker_dumpfile resource update mongod op start timeout=370s op  stop timeout=200s
-
-    echo "Making sure rabbitmq has the notify=true meta parameter"
-    pcs -f $pacemaker_dumpfile resource update rabbitmq meta notify=true
+    pcs -f $pacemaker_dumpfile resource update mongod op stop timeout=100s
 
     echo "Applying new Pacemaker config"
-    if ! pcs cluster cib-push $pacemaker_dumpfile; then
-        echo "ERROR failed to apply new pacemaker config"
-        exit 1
-    fi
+    pcs cluster cib-push $pacemaker_dumpfile
 
     echo "Pacemaker running, stopping cluster node and doing full package update"
     node_count=$(pcs status xml | grep -o "<nodes_configured.*/>" | grep -o 'number="[0-9]*"' | grep -o "[0-9]*")
@@ -222,12 +187,6 @@ if [[ "$pacemaker_status" == "active" ]] ; then
             exit 1
         fi
     done
-
-    echo "Waiting for pacemaker cluster to settle"
-    if ! timeout -k 10 $cluster_settle_timeout crm_resource --wait; then
-        echo "ERROR timed out while waiting for the cluster to settle"
-        exit 1
-    fi
 
     pcs status
 fi

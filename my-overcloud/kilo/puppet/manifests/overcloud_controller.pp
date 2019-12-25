@@ -187,14 +187,6 @@ if hiera('step') >= 2 {
   }
 
   if str2bool(hiera('enable_external_ceph', 'false')) {
-    if str2bool(hiera('ceph_ipv6', false)) {
-      $mon_host = hiera('ceph_mon_host_v6')
-    } else {
-      $mon_host = hiera('ceph_mon_host')
-    }
-    class { '::ceph::profile::params':
-      mon_host            => $mon_host,
-    }
     include ::ceph::profile::client
   }
 
@@ -459,7 +451,7 @@ if hiera('step') >= 3 {
 
   $cinder_enabled_backends = delete_undef_values([$cinder_iscsi_backend, $cinder_rbd_backend, $cinder_netapp_backend, $cinder_nfs_backend])
   class { '::cinder::backends' :
-    enabled_backends => union($cinder_enabled_backends, hiera('cinder_user_enabled_backends')),
+    enabled_backends => $cinder_enabled_backends,
   }
 
   # swift proxy

@@ -29,10 +29,6 @@ parameters:
     default: ''
     description: IP address/subnet on the tenant network
     type: string
-  ManagementIpSubnet: # Only populated when including environments/network-management.yaml
-    default: ''
-    description: IP address/subnet on the management network
-    type: string
   ExternalNetworkVlanID:
     default: 10
     description: Vlan ID for the external network traffic.
@@ -52,10 +48,6 @@ parameters:
   TenantNetworkVlanID:
     default: 50
     description: Vlan ID for the tenant network traffic.
-    type: number
-  ManagementNetworkVlanID:
-    default: 60
-    description: Vlan ID for the management network traffic.
     type: number
   ExternalInterfaceDefaultRoute:
     default: '10.0.0.1'
@@ -85,13 +77,6 @@ resources:
               type: interface
               name: nic2
               use_dhcp: false
-              addresses:
-              -
-                ip_netmask: {get_param: ExternalIpSubnet}
-              routes:
-                -
-                  default: true
-                  next_hop: {get_param: ExternalInterfaceDefaultRoute}
             -
               type: ovs_bridge
               name: {get_input: bridge_name}
@@ -116,6 +101,16 @@ resources:
                   primary: true
                 -
                   type: vlan
+                  vlan_id: {get_param: ExternalNetworkVlanID}
+                  addresses:
+                  -
+                    ip_netmask: {get_param: ExternalIpSubnet}
+                  routes:
+                    -
+                      ip_netmask: 0.0.0.0/0
+                      next_hop: {get_param: ExternalInterfaceDefaultRoute}
+                -
+                  type: vlan
                   vlan_id: {get_param: InternalApiNetworkVlanID}
                   addresses:
                     -
@@ -138,12 +133,6 @@ resources:
                   addresses:
                     -
                       ip_netmask: {get_param: TenantIpSubnet}
-                #-  # Uncomment when including environments/network-management.yaml
-                #  type: vlan
-                #  vlan_id: {get_param: ManagementNetworkVlanID}
-                #  addresses:
-                #    -
-                #      ip_netmask: {get_param: ManagementIpSubnet}
 
 outputs:
   OS::stack_id:

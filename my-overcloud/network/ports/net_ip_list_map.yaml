@@ -19,9 +19,6 @@ parameters:
   TenantIpList:
     default: []
     type: comma_delimited_list
-  ManagementIpList:
-    default: []
-    type: comma_delimited_list
 
 outputs:
   net_ip_map:
@@ -35,4 +32,3 @@ outputs:
       storage: {get_param: StorageIpList}
       storage_mgmt: {get_param: StorageMgmtIpList}
       tenant: {get_param: TenantIpList}
-      management: {get_param: ManagementIpList}

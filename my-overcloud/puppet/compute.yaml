@@ -1,10 +1,11 @@
-heat_template_version: 2015-10-15
+heat_template_version: 2015-04-30
 
 description: >
   OpenStack hypervisor node configured via Puppet.
 
 parameters:
   AdminPassword:
+    default: unset
     description: The password for the keystone admin account, used for monitoring, querying neutron etc.
     type: string
     hidden: true
@@ -15,10 +16,12 @@ parameters:
     constraints:
     - allowed_values: ['', Present]
   CeilometerMeteringSecret:
+    default: unset
     description: Secret shared by the ceilometer services.
     type: string
     hidden: true
   CeilometerPassword:
+    default: unset
     description: The password for the ceilometer service account.
     type: string
     hidden: true
@@ -77,15 +80,8 @@ parameters:
       to create provider networks (and we use this for the default floating
       network) - if changing this either use different post-install network
       scripts or be sure to keep 'datacentre' as a mapping network name.
-    type: comma_delimited_list
+    type: string
     default: "datacentre:br-ex"
-  MigrationSshKey:
-    type: json
-    description: >
-      SSH key for migration.
-      Expects a dictionary with keys 'public_key' and 'private_key'.
-      Values should be identical to SSH public/private key files.
-    default: {}
   NeutronEnableTunnelling:
     type: string
     default: "True"
@@ -95,7 +91,7 @@ parameters:
         Enable/disable the L2 population feature in the Neutron agents.
     default: "False"
   NeutronFlatNetworks:
-    type: comma_delimited_list
+    type: string
     default: 'datacentre'
     description: >
       If set, flat networks to configure in neutron plugins.
@@ -103,17 +99,18 @@ parameters:
     type: string
     default: ''  # Has to be here because of the ignored empty value bug
   NeutronNetworkType:
-    type: comma_delimited_list
-    description: The tenant network type for Neutron.
+    type: string
+    description: The tenant network type for Neutron, either gre or vxlan.
     default: 'vxlan'
   NeutronNetworkVLANRanges:
-    default: 'datacentre:1:1000'
+    default: 'datacentre'
     description: >
       The Neutron ML2 and OpenVSwitch vlan mapping range to support. See the
       Neutron documentation for permitted values. Defaults to permitting any
       VLAN on the 'datacentre' physical network (See NeutronBridgeMappings).
     type: comma_delimited_list
   NeutronPassword:
+    default: unset
     description: The password for the neutron service account, used by neutron agents.
     type: string
     hidden: true
@@ -125,31 +122,23 @@ parameters:
     default: nic1
     description: A port to add to the NeutronPhysicalBridge.
     type: string
-  NeutronTenantMtu:
-    description: >
-      The default MTU for tenant networks. For VXLAN/GRE tunneling, this should
-      be at least 50 bytes smaller than the MTU on the physical network. This
-      value will be used to set the MTU on the virtual Ethernet device.
-      This number is related to the value of NeutronDnsmasqOptions, since that
-      will determine the MTU that is assigned to the VM host through DHCP.
-    default: 1400
-    type: number
   NeutronTunnelTypes:
-    type: comma_delimited_list
+    type: string
     description: |
-        The tunnel types for the Neutron tenant network.
+        The tunnel types for the Neutron tenant network. To specify multiple
+        values, use a comma separated string, like so: 'gre,vxlan'
     default: 'vxlan'
   NeutronTunnelIdRanges:
     description: |
         Comma-separated list of <tun_min>:<tun_max> tuples enumerating ranges
         of GRE tunnel IDs that are available for tenant network allocation
-    default: ["1:4094", ]
+    default: ["1:1000", ]
     type: comma_delimited_list
   NeutronVniRanges:
     description: |
         Comma-separated list of <vni_min>:<vni_max> tuples enumerating ranges
         of VXLAN VNI IDs that are available for tenant network allocation
-    default: ["1:4094", ]
+    default: ["1:1000", ]
     type: comma_delimited_list
   NeutronPublicInterfaceRawDevice:
     default: ''
@@ -158,6 +147,7 @@ parameters:
     default: 'False'
     type: string
   NeutronMetadataProxySharedSecret:
+    default: 'unset'
     description: Shared secret to prevent spoofing
     type: string
     hidden: true
@@ -168,7 +158,7 @@ parameters:
         from neutron.core_plugins namespace.
     type: string
   NeutronServicePlugins:
-    default: "router,qos"
+    default: "router"
     description: |
         Comma-separated list of service plugin entrypoints to be loaded from the
         neutron.service_plugins namespace.
@@ -181,13 +171,9 @@ parameters:
   NeutronMechanismDrivers:
     default: 'openvswitch'
     description: |
-        The mechanism drivers for the Neutron tenant network.
-    type: comma_delimited_list
-  NeutronAgentExtensions:
-    default: "qos"
-    description: |
-        Comma-separated list of extensions enabled for the Neutron agents.
-    type: comma_delimited_list
+        The mechanism drivers for the Neutron tenant network. To specify multiple
+        values, use a comma separated string, like so: 'openvswitch,l2_population'
+    type: string
   # Not relevant for Computes, should be removed
   NeutronAllowL3AgentFailover:
     default: 'True'
@@ -202,9 +188,6 @@ parameters:
     default: 'dvr_snat'
     description: Agent mode for the neutron-l3-agent on the controller hosts
     type: string
-  NodeIndex:
-    type: number
-    default: 0
   NovaApiHost:
     type: string
     default: ''  # Has to be here because of the ignored empty value bug
@@ -217,19 +200,9 @@ parameters:
       NovaCompute specific configuration to inject into the cluster. Same
       structure as ExtraConfig.
     type: json
-  NovaComputeIPs:
-    default: {}
-    type: json
   NovaComputeLibvirtType:
     type: string
-    default: kvm
-  NovaComputeLibvirtDisableTcp:
-    type: boolean
-    default: false
-    description: |
-      *DEPRECATED* No longer used or does anything. SSH migration has replaced
-      this option. See https://access.redhat.com/solutions/3022771 for
-      additional details.
+    default: ''
   NovaComputeLibvirtVifDriver:
     default: ''
     description: Libvirt VIF driver configuration for the network
@@ -238,11 +211,8 @@ parameters:
     default: false
     description: Whether to enable or not the Rbd backend for Nova
     type: boolean
-  NovaIPv6:
-    default: false
-    description: Enable IPv6 features in Nova
-    type: boolean
   NovaPassword:
+    default: unset
     description: The password for the nova service account, used by nova-api.
     type: string
     hidden: true
@@ -265,6 +235,7 @@ parameters:
     type: string
     default: ''  # Has to be here because of the ignored empty value bug
   RabbitPassword:
+    default: guest
     description: The password for RabbitMQ
     type: string
     hidden: true
@@ -282,27 +253,15 @@ parameters:
     default: 5672
     description: Set rabbit subscriber port, change this if using SSL
     type: number
-  SnmpdConfigOverride:
-    default: []
-    description: An array of snmp config.
-    # Example: ['proc neutron-server', 'proc nova-api']
-    # Note: since we give total freedom to configure snmpd_config and don't
-    # verify the content, the user will have to ensure that the parameters
-    # related to user / password in the array, are the same given to
-    # THT via SnmpdReadonlyUserName and SnmpdReadonlyUserPassword.
-    type: json
   SnmpdReadonlyUserName:
     default: ro_snmp_user
     description: The user name for SNMPd with readonly rights running on all Overcloud nodes
     type: string
   SnmpdReadonlyUserPassword:
+    default: unset
     description: The user password for SNMPd with readonly rights running on all Overcloud nodes
     type: string
     hidden: true
-  UpgradeLevelNovaCompute:
-    type: string
-    description: Nova Compute upgrade level
-    default: ''
   EnablePackageInstall:
     default: 'false'
     description: Set to true to enable package installation via Puppet
@@ -317,10 +276,6 @@ parameters:
     description: Mapping of service endpoint -> protocol. Typically set
                  via parameter_defaults in the resource registry.
     type: json
-  TimeZone:
-    default: 'UTC'
-    description: The timezone to be set on compute nodes.
-    type: string
   UpdateIdentifier:
     default: ''
     type: string
@@ -330,25 +285,12 @@ parameters:
   Hostname:
     type: string
     default: '' # Defaults to Heat created hostname
-  HostnameMap:
-    type: json
-    default: {}
-    description: Optional mapping to override hostnames
-  NetworkDeploymentActions:
-    type: comma_delimited_list
-    description: >
-      Heat action when to apply network configuration changes
-    default: ['CREATE']
   ServerMetadata:
     default: {}
     description: >
       Extra properties or metadata passed to Nova for the created nodes in
       the overcloud. It's accessible via the Nova metadata API.
     type: json
-  SchedulerHints:
-    type: json
-    description: Optional scheduler hints to pass to nova
-    default: {}
 
   SoftwareConfigTransport:
     default: POLL_SERVER_CFN
@@ -363,29 +305,7 @@ parameters:
     description: >
       The DNS domain used for the hosts. This should match the dhcp_domain
       configured in the Undercloud neutron. Defaults to localdomain.
-  SshServerOptions:
-    default:
-      HostKey:
-        - '/etc/ssh/ssh_host_rsa_key'
-        - '/etc/ssh/ssh_host_ecdsa_key'
-        - '/etc/ssh/ssh_host_ed25519_key'
-      SyslogFacility: 'AUTHPRIV'
-      AuthorizedKeysFile: '.ssh/authorized_keys'
-      PasswordAuthentication: 'no'
-      ChallengeResponseAuthentication: 'no'
-      GSSAPIAuthentication: 'yes'
-      GSSAPICleanupCredentials: 'no'
-      UsePAM: 'yes'
-      X11Forwarding: 'yes'
-      UsePrivilegeSeparation: 'sandbox'
-      AcceptEnv:
-        - 'LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES'
-        - 'LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT'
-        - 'LC_IDENTIFICATION LC_ALL LANGUAGE'
-        - 'XMODIFIERS'
-      Subsystem: 'sftp  /usr/libexec/openssh/sftp-server'
-    description: Mapping of sshd_config values
-    type: json
+
 
 resources:
 
@@ -402,13 +322,9 @@ resources:
         - network: ctlplane
       user_data_format: SOFTWARE_CONFIG
       user_data: {get_resource: UserData}
-      name:
-        str_replace:
-            template: {get_param: Hostname}
-            params: {get_param: HostnameMap}
+      name: {get_param: Hostname}
       software_config_transport: {get_param: SoftwareConfigTransport}
       metadata: {get_param: ServerMetadata}
-      scheduler_hints: {get_param: SchedulerHints}
 
   # Combine the NodeAdminUserData and NodeUserData mime archives
   UserData:
@@ -430,83 +346,42 @@ resources:
   NodeUserData:
     type: OS::TripleO::NodeUserData
 
-  ExternalPort:
-    type: OS::TripleO::Compute::Ports::ExternalPort
-    properties:
-      ControlPlaneIP: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-      IPPool: {get_param: NovaComputeIPs}
-      NodeIndex: {get_param: NodeIndex}
-
   InternalApiPort:
     type: OS::TripleO::Compute::Ports::InternalApiPort
     properties:
       ControlPlaneIP: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-      IPPool: {get_param: NovaComputeIPs}
-      NodeIndex: {get_param: NodeIndex}
 
   StoragePort:
     type: OS::TripleO::Compute::Ports::StoragePort
     properties:
       ControlPlaneIP: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-      IPPool: {get_param: NovaComputeIPs}
-      NodeIndex: {get_param: NodeIndex}
-
-  StorageMgmtPort:
-    type: OS::TripleO::Compute::Ports::StorageMgmtPort
-    properties:
-      ControlPlaneIP: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-      IPPool: {get_param: NovaComputeIPs}
-      NodeIndex: {get_param: NodeIndex}
 
   TenantPort:
     type: OS::TripleO::Compute::Ports::TenantPort
     properties:
       ControlPlaneIP: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-      IPPool: {get_param: NovaComputeIPs}
-      NodeIndex: {get_param: NodeIndex}
-
-  ManagementPort:
-    type: OS::TripleO::Compute::Ports::ManagementPort
-    properties:
-      ControlPlaneIP: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-      IPPool: {get_param: NovaComputeIPs}
-      NodeIndex: {get_param: NodeIndex}
 
   NetIpMap:
     type: OS::TripleO::Network::Ports::NetIpMap
     properties:
       ControlPlaneIp: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-      ExternalIp: {get_attr: [ExternalPort, ip_address]}
-      ExternalIpUri: {get_attr: [ExternalPort, ip_address_uri]}
       InternalApiIp: {get_attr: [InternalApiPort, ip_address]}
-      InternalApiIpUri: {get_attr: [InternalApiPort, ip_address_uri]}
       StorageIp: {get_attr: [StoragePort, ip_address]}
-      StorageIpUri: {get_attr: [StoragePort, ip_address_uri]}
-      StorageMgmtIp: {get_attr: [StorageMgmtPort, ip_address]}
-      StorageMgmtIpUri: {get_attr: [StorageMgmtPort, ip_address_uri]}
       TenantIp: {get_attr: [TenantPort, ip_address]}
-      TenantIpUri: {get_attr: [TenantPort, ip_address_uri]}
-      ManagementIp: {get_attr: [ManagementPort, ip_address]}
-      ManagementIpUri: {get_attr: [ManagementPort, ip_address_uri]}
 
   NetworkConfig:
     type: OS::TripleO::Compute::Net::SoftwareConfig
     properties:
       ControlPlaneIp: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-      ExternalIpSubnet: {get_attr: [ExternalPort, ip_subnet]}
       InternalApiIpSubnet: {get_attr: [InternalApiPort, ip_subnet]}
       StorageIpSubnet: {get_attr: [StoragePort, ip_subnet]}
-      StorageMgmtIpSubnet: {get_attr: [StorageMgmtPort, ip_subnet]}
       TenantIpSubnet: {get_attr: [TenantPort, ip_subnet]}
-      ManagementIpSubnet: {get_attr: [ManagementPort, ip_subnet]}
 
   NetworkDeployment:
     type: OS::TripleO::SoftwareDeployment
     properties:
-      name: NetworkDeployment
       config: {get_resource: NetworkConfig}
       server: {get_resource: NovaCompute}
-      actions: {get_param: NetworkDeploymentActions}
       input_values:
         bridge_name: {get_param: NeutronPhysicalBridge}
         interface_name: {get_param: NeutronPublicInterface}
@@ -528,11 +403,8 @@ resources:
             - all_nodes # provided by allNodesConfig
             - '"%{::osfamily}"'
             - common
-            - neutron_bigswitch_data # Optionally provided by ComputeExtraConfigPre
             - cisco_n1kv_data  # Optionally provided by ComputeExtraConfigPre
             - nova_nuage_data  # Optionally provided by ComputeExtraConfigPre
-            - midonet_data # Optionally provided by AllNodesExtraConfig
-            - neutron_opencontrail_data  # Optionally provided by ComputeExtraConfigPre
           datafiles:
             compute_extraconfig:
               mapped_data: {get_param: NovaComputeExtraConfig}
@@ -546,40 +418,20 @@ resources:
               raw_data: {get_file: hieradata/compute.yaml}
               mapped_data:
                 cinder_enable_nfs_backend: {get_input: cinder_enable_nfs_backend}
-                force_disable_libvirt_tcp: {get_input: force_disable_libvirt_tcp}
-                live_migration_ssh_inbound_addr: {get_input: live_migration_ssh_inbound_addr}
-                cold_migration_ssh_inbound_addr: {get_input: cold_migration_ssh_inbound_addr}
-                migration_ssh_key: {get_input: migration_ssh_key}
-                migration_ssh_localaddrs: {get_input: migration_ssh_localaddrs}
-                nova::use_ipv6: {get_input: nova_ipv6}
-<<<<<<< HEAD
-                ssh:server::options: {get_input: ssh_server_options}
-                ssh:server::storeconfigs_enabled: false
-=======
-                ssh::server::options: {get_input: ssh_server_options}
-                ssh::server::storeconfigs_enabled: false
->>>>>>> 2c04151dedaa435a2a927377b4e5fa042b8fb6c0
                 nova::debug: {get_input: debug}
-                nova::my_ip: {get_input: my_ip}
                 nova::rabbit_userid: {get_input: rabbit_username}
                 nova::rabbit_password: {get_input: rabbit_password}
                 nova::rabbit_use_ssl: {get_input: rabbit_client_use_ssl}
                 nova::rabbit_port: {get_input: rabbit_client_port}
-                nova::upgrade_level_compute: {get_input: upgrade_level_nova_compute}
                 nova_compute_driver: {get_input: nova_compute_driver}
                 nova::compute::libvirt::libvirt_virt_type: {get_input: nova_compute_libvirt_type}
                 nova::compute::neutron::libvirt_vif_driver: {get_input: nova_compute_libvirt_vif_driver}
-                nova::compute::libvirt::vncserver_listen: {get_input: nova_compute_libvirt_vncserver_listen}
                 nova_api_host: {get_input: nova_api_host}
                 nova::compute::vncproxy_host: {get_input: nova_public_ip}
                 nova::compute::rbd::ephemeral_storage: {get_input: nova_enable_rbd_backend}
                 rbd_persistent_storage: {get_input: cinder_enable_rbd_backend}
                 nova_password: {get_input: nova_password}
-                nova::compute::network_device_mtu: {get_input: neutron_tenant_mtu}
                 nova::compute::vncserver_proxyclient_address: {get_input: nova_vnc_proxyclient_address}
-                nova::vncproxy::common::vncproxy_protocol: {get_input: nova_vncproxy_protocol}
-                nova::vncproxy::common::vncproxy_host: {get_input: nova_vncproxy_host}
-                nova::vncproxy::common::vncproxy_port: {get_input: nova_vncproxy_port}
                 nova::network::neutron::neutron_ovs_bridge: {get_input: nova_ovs_bridge}
                 nova::network::neutron::security_group_api: {get_input: nova_security_group_api}
                 ceilometer::debug: {get_input: debug}
@@ -591,7 +443,6 @@ resources:
                 ceilometer::agent::auth::auth_password: {get_input: ceilometer_password}
                 ceilometer::agent::auth::auth_url: {get_input: ceilometer_agent_auth_url}
                 ceilometer_compute_agent: {get_input: ceilometer_compute_agent}
-                snmpd_config_override: {get_input: snmpd_config_override}
                 snmpd_readonly_user_name: {get_input: snmpd_readonly_user_name}
                 snmpd_readonly_user_password: {get_input: snmpd_readonly_user_password}
                 nova::glance_api_servers: {get_input: glance_api_servers}
@@ -600,18 +451,16 @@ resources:
                 neutron::rabbit_user: {get_input: rabbit_username}
                 neutron::rabbit_use_ssl: {get_input: rabbit_client_use_ssl}
                 neutron::rabbit_port: {get_input: rabbit_client_port}
-                neutron::network_device_mtu: {get_input: neutron_tenant_mtu}
-                neutron::plugins::ml2::flat_networks: {get_input: neutron_flat_networks}
+                neutron_flat_networks: {get_input: neutron_flat_networks}
                 neutron_host: {get_input: neutron_host}
                 neutron::agents::ml2::ovs::local_ip: {get_input: neutron_local_ip}
 
-                neutron::plugins::ml2::tenant_network_types: {get_input: neutron_tenant_network_types}
-                neutron::agents::ml2::ovs::tunnel_types: {get_input: neutron_tunnel_types}
-                neutron::agents::ml2::ovs::extensions: {get_input: neutron_agent_extensions}
+                neutron_tenant_network_type: {get_input: neutron_tenant_network_type}
+                neutron_tunnel_types: {get_input: neutron_tunnel_types}
                 neutron::plugins::ml2::network_vlan_ranges: {get_input: neutron_network_vlan_ranges}
                 neutron::plugins::ml2::tunnel_id_ranges: {get_input: neutron_tunnel_id_ranges}
                 neutron::plugins::ml2::vni_ranges: {get_input: neutron_vni_ranges}
-                neutron::agents::ml2::ovs::bridge_mappings: {get_input: neutron_bridge_mappings}
+                neutron_bridge_mappings: {get_input: neutron_bridge_mappings}
                 neutron::agents::ml2::ovs::enable_tunneling: {get_input: neutron_enable_tunneling}
                 neutron::agents::ml2::ovs::l2_population: {get_input: neutron_enable_l2pop}
                 neutron_physical_bridge: {get_input: neutron_physical_bridge}
@@ -625,12 +474,11 @@ resources:
                 neutron::core_plugin: {get_input: neutron_core_plugin}
                 neutron::service_plugins: {get_input: neutron_service_plugins}
                 neutron::plugins::ml2::type_drivers: {get_input: neutron_type_drivers}
-                neutron::plugins::ml2::mechanism_drivers: {get_input: neutron_mechanism_drivers}
+                neutron_mechanism_drivers: {get_input: neutron_mechanism_drivers}
                 neutron_public_interface_raw_device: {get_input: neutron_public_interface_raw_device}
                 keystone_public_api_virtual_ip: {get_input: keystone_vip}
                 admin_password: {get_input: admin_password}
                 ntp::servers: {get_input: ntp_servers}
-                timezone::timezone: {get_input: timezone}
                 tripleo::packages::enable_install: {get_input: enable_package_install}
                 tripleo::packages::enable_upgrade: {get_input: enable_package_upgrade}
 
@@ -638,95 +486,59 @@ resources:
     type: OS::TripleO::SoftwareDeployment
     depends_on: NetworkDeployment
     properties:
-      name: NovaComputeDeployment
       config: {get_resource: NovaComputeConfig}
       server: {get_resource: NovaCompute}
       input_values:
         cinder_enable_nfs_backend: {get_param: CinderEnableNfsBackend}
-        force_disable_libvirt_tcp: {get_param: NovaComputeLibvirtDisableTcp}
         debug: {get_param: Debug}
         nova_compute_driver: {get_param: NovaComputeDriver}
         nova_compute_libvirt_type: {get_param: NovaComputeLibvirtType}
         nova_compute_libvirt_vif_driver: {get_param: NovaComputeLibvirtVifDriver}
-        nova_compute_libvirt_vncserver_listen: {get_attr: [NetIpMap, net_ip_map, {get_param: [ServiceNetMap, NovaLibvirtNetwork]}]}
         nova_public_ip: {get_param: NovaPublicIP}
         nova_api_host: {get_param: NovaApiHost}
         nova_password: {get_param: NovaPassword}
         nova_enable_rbd_backend: {get_param: NovaEnableRbdBackend}
-        nova_ipv6: {get_param: NovaIPv6}
-        migration_ssh_key: {get_param: MigrationSshKey}
-        ssh_server_options: {get_param: SshServerOptions}
         cinder_enable_rbd_backend: {get_param: CinderEnableRbdBackend}
         nova_vnc_proxyclient_address: {get_attr: [NetIpMap, net_ip_map, {get_param: [ServiceNetMap, NovaVncProxyNetwork]}]}
-<<<<<<< HEAD
-        live_migration_ssh_inbound_addr: {get_attr: [NetIpMap, net_ip_map, {get_param: [ServiceNetMap, NovaLibvirtNetwork]}]}
-        cold_migration_ssh_inbound_addr: {get_attr: [NetIpMap, net_ip_map, {get_param: [ServiceNetMap, NovaColdMigrationNetwork]}]}
-=======
-        live_migration_ssh_inbound_addr: {get_attr: [NetIpMap, net_ip_map, {get_param: [ServiceNetMap, NovaApiNetwork]}]}
-        cold_migration_ssh_inbound_addr: {get_attr: [NetIpMap, net_ip_map, {get_param: [ServiceNetMap, NovaApiNetwork]}]}
->>>>>>> 2c04151dedaa435a2a927377b4e5fa042b8fb6c0
-        migration_ssh_localaddrs:
-          - "%{hiera('live_migration_ssh_inbound_addr')}"
-          - "%{hiera('cold_migration_ssh_inbound_addr')}"
-        nova_vncproxy_protocol: {get_param: [EndpointMap, NovaVNCProxyPublic, protocol]}
-        # Remove brackets that may come if the IP address is IPv6.
-        # For DNS names and IPv4, this will just get the NovaVNCProxyPublic value
-        nova_vncproxy_host:
-          str_replace:
-            template: {get_param: [EndpointMap, NovaVNCProxyPublic, host]}
-            params:
-              '[': ''
-              ']': ''
-        nova_vncproxy_port: {get_param: [EndpointMap, NovaVNCProxyPublic, port]}
         nova_ovs_bridge: {get_param: NovaOVSBridge}
         nova_security_group_api: {get_param: NovaSecurityGroupAPI}
-        upgrade_level_nova_compute: {get_param: UpgradeLevelNovaCompute}
         ceilometer_metering_secret: {get_param: CeilometerMeteringSecret}
         ceilometer_password: {get_param: CeilometerPassword}
         ceilometer_compute_agent: {get_param: CeilometerComputeAgent}
         ceilometer_agent_auth_url: {get_param: [EndpointMap, KeystoneInternal, uri]}
-        snmpd_config_override: {get_param: SnmpdConfigOverride}
         snmpd_readonly_user_name: {get_param: SnmpdReadonlyUserName}
         snmpd_readonly_user_password: {get_param: SnmpdReadonlyUserPassword}
         glance_api_servers: {get_param: [EndpointMap, GlanceInternal, uri]}
-        neutron_flat_networks:
-          str_replace:
-            template: NETWORKS
-            params:
-              NETWORKS: {get_param: NeutronFlatNetworks}
+        neutron_flat_networks: {get_param: NeutronFlatNetworks}
         neutron_host: {get_param: NeutronHost}
         neutron_local_ip: {get_attr: [NetIpMap, net_ip_map, {get_param: [ServiceNetMap, NeutronTenantNetwork]}]}
+        neutron_tenant_network_type: {get_param: NeutronNetworkType}
+        neutron_tunnel_types: {get_param: NeutronTunnelTypes}
         neutron_tunnel_id_ranges:
           str_replace:
-            template: RANGES
+            template: "['RANGES']"
             params:
-              RANGES: {get_param: NeutronTunnelIdRanges}
+              RANGES:
+                list_join:
+                - "','"
+                - {get_param: NeutronTunnelIdRanges}
         neutron_vni_ranges:
           str_replace:
-            template: RANGES
+            template: "['RANGES']"
             params:
-              RANGES: {get_param: NeutronVniRanges}
-        neutron_tenant_network_types:
-          str_replace:
-            template: TYPES
-            params:
-              TYPES: {get_param: NeutronNetworkType}
-        neutron_tunnel_types:
-          str_replace:
-            template: TYPES
-            params:
-              TYPES: {get_param: NeutronTunnelTypes}
+              RANGES:
+                list_join:
+                - "','"
+                - {get_param: NeutronVniRanges}
         neutron_network_vlan_ranges:
           str_replace:
-            template: RANGES
+            template: "['RANGES']"
             params:
-              RANGES: {get_param: NeutronNetworkVLANRanges}
-        neutron_bridge_mappings:
-          str_replace:
-            template: MAPPINGS
-            params:
-              MAPPINGS: {get_param: NeutronBridgeMappings}
-        neutron_tenant_mtu: {get_param: NeutronTenantMtu}
+              RANGES:
+                list_join:
+                - "','"
+                - {get_param: NeutronNetworkVLANRanges}
+        neutron_bridge_mappings: {get_param: NeutronBridgeMappings}
         neutron_enable_tunneling: {get_param: NeutronEnableTunnelling}
         neutron_enable_l2pop: {get_param: NeutronEnableL2Pop}
         neutron_physical_bridge: {get_param: NeutronPhysicalBridge}
@@ -738,36 +550,31 @@ resources:
         neutron_core_plugin: {get_param: NeutronCorePlugin}
         neutron_service_plugins:
           str_replace:
-            template: PLUGINS
+            template: "['PLUGINS']"
             params:
-              PLUGINS: {get_param: NeutronServicePlugins}
+              PLUGINS:
+                list_join:
+                - "','"
+                - {get_param: NeutronServicePlugins}
         neutron_type_drivers:
           str_replace:
-            template: DRIVERS
+            template: "['DRIVERS']"
             params:
-              DRIVERS: {get_param: NeutronTypeDrivers}
-        neutron_mechanism_drivers:
-          str_replace:
-            template: MECHANISMS
-            params:
-              MECHANISMS: {get_param: NeutronMechanismDrivers}
-        neutron_agent_extensions:
-          str_replace:
-            template: AGENT_EXTENSIONS
-            params:
-              AGENT_EXTENSIONS: {get_param: NeutronAgentExtensions}
+              DRIVERS:
+                list_join:
+                - "','"
+                - {get_param: NeutronTypeDrivers}
+        neutron_mechanism_drivers: {get_param: NeutronMechanismDrivers}
         neutron_public_interface_raw_device: {get_param: NeutronPublicInterfaceRawDevice}
         neutron_internal_url: {get_param: [EndpointMap, NeutronInternal, uri]}
         neutron_admin_auth_url: {get_param: [EndpointMap, KeystoneAdmin, uri]}
         keystone_vip: {get_param: KeystonePublicApiVirtualIP}
         admin_password: {get_param: AdminPassword}
-        my_ip: {get_attr: [NetIpMap, net_ip_map, {get_param: [ServiceNetMap, NovaApiNetwork]}]}
         rabbit_username: {get_param: RabbitUserName}
         rabbit_password: {get_param: RabbitPassword}
         rabbit_client_use_ssl: {get_param: RabbitClientUseSSL}
         rabbit_client_port: {get_param: RabbitClientPort}
         ntp_servers: {get_param: NtpServer}
-        timezone: {get_param: TimeZone}
         enable_package_install: {get_param: EnablePackageInstall}
         enable_package_upgrade: {get_attr: [UpdateDeployment, update_managed_packages]}
 
@@ -777,12 +584,6 @@ resources:
     type: OS::TripleO::NodeTLSCAData
     properties:
       server: {get_resource: NovaCompute}
-
-  SshHostPubKey:
-    type: OS::TripleO::Ssh::HostPubKey
-    depends_on: NovaComputeDeployment
-    properties:
-        server: {get_resource: NovaCompute}
 
   # Hook for site-specific additional pre-deployment config, e.g extra hieradata
   ComputeExtraConfigPre:
@@ -805,7 +606,6 @@ resources:
   UpdateDeployment:
     type: OS::Heat::SoftwareDeployment
     properties:
-      name: UpdateDeployment
       config: {get_resource: UpdateConfig}
       server: {get_resource: NovaCompute}
       input_values:
@@ -816,24 +616,15 @@ outputs:
   ip_address:
     description: IP address of the server in the ctlplane network
     value: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-  external_ip_address:
-    description: IP address of the server in the external network
-    value: {get_attr: [ExternalPort, ip_address]}
   internal_api_ip_address:
     description: IP address of the server in the internal_api network
     value: {get_attr: [InternalApiPort, ip_address]}
   storage_ip_address:
     description: IP address of the server in the storage network
     value: {get_attr: [StoragePort, ip_address]}
-  storage_mgmt_ip_address:
-    description: IP address of the server in the storage_mgmt network
-    value: {get_attr: [StorageMgmtPort, ip_address]}
   tenant_ip_address:
     description: IP address of the server in the tenant network
     value: {get_attr: [TenantPort, ip_address]}
-  management_ip_address:
-    description: IP address of the server in the management network
-    value: {get_attr: [ManagementPort, ip_address]}
   hostname:
     description: Hostname of the server
     value: {get_attr: [NovaCompute, name]}
@@ -851,65 +642,6 @@ outputs:
     description: Heat resource handle for the Nova compute server
     value:
       {get_resource: NovaCompute}
-  known_hosts_entry:
-    description: Entry for ssh known hosts
-    value:
-      str_replace:
-        template: "PRIMARYIP,PRIMARYHOST.DOMAIN,PRIMARYHOST,\
-EXTERNALIP,EXTERNALHOST.DOMAIN,EXTERNALHOST,\
-INTERNAL_APIIP,INTERNAL_APIHOST.DOMAIN,INTERNAL_APIHOST,\
-STORAGEIP,STORAGEHOST.DOMAIN,STORAGEHOST,\
-STORAGE_MGMTIP,STORAGE_MGMTHOST.DOMAIN,STORAGE_MGMTHOST,\
-TENANTIP,TENANTHOST.DOMAIN,TENANTHOST,\
-MANAGEMENTIP,MANAGEMENTHOST.DOMAIN,MANAGEMENTHOST,\
-CTLPLANEIP,CTLPLANEHOST.DOMAIN,CTLPLANEHOST HOSTSSHPUBKEY"
-        params:
-          PRIMARYIP: {get_attr: [NetIpMap, net_ip_map, {get_param: [ServiceNetMap, ComputeHostnameResolveNetwork]}]}
-          DOMAIN: {get_param: CloudDomain}
-          PRIMARYHOST: {get_attr: [NovaCompute, name]}
-          EXTERNALIP: {get_attr: [ExternalPort, ip_address]}
-          EXTERNALHOST:
-            list_join:
-            - '.'
-            - - {get_attr: [NovaCompute, name]}
-              - external
-          INTERNAL_APIIP: {get_attr: [InternalApiPort, ip_address]}
-          INTERNAL_APIHOST:
-            list_join:
-            - '.'
-            - - {get_attr: [NovaCompute, name]}
-              - internalapi
-          STORAGEIP: {get_attr: [StoragePort, ip_address]}
-          STORAGEHOST:
-            list_join:
-            - '.'
-            - - {get_attr: [NovaCompute, name]}
-              - storage
-          STORAGE_MGMTIP: {get_attr: [StorageMgmtPort, ip_address]}
-          STORAGE_MGMTHOST:
-            list_join:
-            - '.'
-            - - {get_attr: [NovaCompute, name]}
-              - storagemgmt
-          TENANTIP: {get_attr: [TenantPort, ip_address]}
-          TENANTHOST:
-            list_join:
-            - '.'
-            - - {get_attr: [NovaCompute, name]}
-              - tenant
-          MANAGEMENTIP: {get_attr: [ManagementPort, ip_address]}
-          MANAGEMENTHOST:
-            list_join:
-            - '.'
-            - - {get_attr: [NovaCompute, name]}
-              - management
-          CTLPLANEIP: {get_attr: [NovaCompute, networks, ctlplane, 0]}
-          CTLPLANEHOST:
-            list_join:
-            - '.'
-            - - {get_attr: [NovaCompute, name]}
-              - ctlplane
-          HOSTSSHPUBKEY: {get_attr: [SshHostPubKey, ecdsa]}
   config_identifier:
     description: identifier which changes if the node configuration may need re-applying
     value:

@@ -1,4 +1,4 @@
-heat_template_version: 2015-10-15
+heat_template_version: 2015-11-12
 
 description: Configure hieradata for Cinder Dell Storage Center configuration
 

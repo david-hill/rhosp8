@@ -43,11 +43,6 @@ parameters:
     description: Cloud Management System ID (CMS ID) to distinguish between OS instances on the same VSD
     type: string
 
-  UseForwardedFor:
-    description: Treat X-Forwarded-For as the canonical remote address. Only enable this if you have a sanitizing proxy.
-    type: boolean
-    default: false
-
 resources:
   NeutronNuageConfig:
     type: OS::Heat::StructuredConfig
@@ -66,12 +61,10 @@ resources:
                neutron::plugins::nuage::nuage_vsd_organization: {get_input: NuageVSDOrganization}
                neutron::plugins::nuage::nuage_base_uri_version: {get_input: NuageBaseURIVersion}
                neutron::plugins::nuage::nuage_cms_id: {get_input: NuageCMSId}
-               nova::api::use_forwarded_for: {get_input: NovaUseForwardedFor}
 
   NeutronNuageDeployment:
     type: OS::Heat::StructuredDeployment
     properties:
-      name: NeutronNuageDeployment
       config: {get_resource: NeutronNuageConfig}
       server: {get_param: server}
       input_values:
@@ -83,7 +76,6 @@ resources:
         NuageVSDOrganization: {get_param: NeutronNuageVSDOrganization}
         NuageBaseURIVersion: {get_param: NeutronNuageBaseURIVersion}
         NuageCMSId: {get_param: NeutronNuageCMSId}
-        NovaUseForwardedFor: {get_param: UseForwardedFor}
 
 outputs:
   deploy_stdout:

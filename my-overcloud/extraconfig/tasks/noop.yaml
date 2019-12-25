@@ -4,22 +4,6 @@ description: 'No-op task'
 parameters:
   servers:
     type: json
-    default: []
-  controller_servers:
-    type: json
-    default: []
-  compute_servers:
-    type: json
-    default: []
-  blockstorage_servers:
-    type: json
-    default: []
-  objectstorage_servers:
-    type: json
-    default: []
-  cephstorage_servers:
-    type: json
-    default: []
   input_values:
     type: json
     default: {}
